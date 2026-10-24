@@ -1,0 +1,10 @@
+# 访问令牌与运行期文件（不要提交）
+remote/token.txt
+remote/server.log
+remote/server.log.old
+remote/install-state.json
+remote/pending.json
+
+# Windows
+Thumbs.db
+desktop.ini

@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>远程关机控制</title>
+  <style>
+    :root { --bg:#f5f7fa; --card:#fff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --danger:#dc2626; --ok:#059669; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:18px 22px; background:#111827; color:#fff; }
+    header h1 { font-size:18px; margin:0; font-weight:600; }
+    .badge { font-size:12px; padding:3px 9px; border-radius:999px; background:#374151; color:#d1d5db; }
+    .badge.ok { background:#065f46; color:#d1fae5; }
+    .badge.bad { background:#7f1d1d; color:#fee2e2; }
+    main { max-width:820px; margin:22px auto; padding:0 16px; display:grid; gap:16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+    .card h2 { font-size:15px; margin:0 0 14px; }
+    dl { display:grid; grid-template-columns: 120px 1fr; gap:8px 14px; margin:0; font-size:14px; }
+    dt { color:var(--muted); }
+    dd { margin:0; word-break:break-all; }
+    form { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    input[type=time] { font-size:16px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; }
+    button { font-size:14px; padding:9px 14px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+    button:hover { border-color:#9ca3af; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+    .quick { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+    .msg { min-height:20px; margin:10px 0 0; font-size:13px; color:var(--muted); }
+    .msg.err { color:var(--danger); }
+    .msg.ok { color:var(--ok); }
+    .overlay { position:fixed; inset:0; background:rgba(17,24,39,.72); display:flex; align-items:center; justify-content:center; padding:20px; z-index:10; }
+    .overlay[hidden] { display:none; }
+    .login { background:#fff; border-radius:14px; padding:24px; width:min(420px,100%); }
+    .login h2 { margin:0 0 8px; font-size:18px; }
+    .login p { margin:0 0 14px; color:var(--muted); font-size:13px; line-height:1.6; }
+    .login input { width:100%; padding:10px 12px; font-size:15px; border:1px solid var(--line); border-radius:8px; }
+    .login button { width:100%; margin-top:12px; }
+    .login .msg { color:var(--danger); }
+    .row-actions { display:flex; gap:10px; flex-wrap:wrap; }
+    .hint { color:var(--muted); font-size:12px; margin-top:10px; }
+    @media (max-width:520px) { dl { grid-template-columns: 96px 1fr; } }
+  </style>
+</head>
+<body>
+  <div id="login" class="overlay">
+    <form id="loginForm" class="login">
+      <h2>输入访问令牌</h2>
+      <p>令牌在目标电脑的 <code>remote\token.txt</code> 中。只需输入一次，浏览器会记住。</p>
+      <input id="tokenInput" type="password" autocomplete="current-password" placeholder="32 位令牌">
+      <button type="submit" class="primary">连接</button>
+      <p id="loginMsg" class="msg"></p>
+    </form>
+  </div>
+
+  <header>
+    <h1><span id="hostname">目标电脑</span> · 远程关机</h1>
+    <span id="conn" class="badge">未连接</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>状态</h2>
+      <dl>
+        <dt>目标机时间</dt><dd id="now">—</dd>
+        <dt>每日任务</dt><dd id="daily">—</dd>
+        <dt>下次自动运行</dt><dd id="nextRun">—</dd>
+        <dt>本次排定</dt><dd id="pending">—</dd>
+        <dt>最近操作</dt><dd id="lastAction">—</dd>
+      </dl>
+      <p class="hint">页面每 5 秒自动刷新。电脑需保持登录（锁屏可以）。</p>
+    </section>
+
+    <section class="card">
+      <h2>定时关机</h2>
+      <form id="scheduleForm">
+        <input id="at" type="time" value="23:30" required>
+        <button type="submit" class="primary">排定关机</button>
+      </form>
+      <div class="quick">
+        <button type="button" data-min="10">10 分钟后</button>
+        <button type="button" data-min="30">30 分钟后</button>
+        <button type="button" data-min="60">60 分钟后</button>
+      </div>
+      <p id="scheduleMsg" class="msg"></p>
+    </section>
+
+    <section class="card">
+      <h2>危险操作</h2>
+      <div class="row-actions">
+        <button id="shutdownHard" type="button" class="danger">立即关机（无法取消）</button>
+        <button id="cancel" type="button">取消关机</button>
+        <button id="changeToken" type="button">更换令牌</button>
+      </div>
+      <p id="dangerMsg" class="msg"></p>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+      var TOKEN_KEY = 'asr_token';
+      var token = localStorage.getItem(TOKEN_KEY) || '';
+      var $ = function (id) { return document.getElementById(id); };
+
+      function fmt(v) {
+        if (!v) { return '—'; }
+        var d = new Date(v);
+        if (isNaN(d.getTime())) { return String(v); }
+        return d.toLocaleString('zh-CN', { hour12: false });
+      }
+
+      function stateText(s) {
+        return ({ Ready: '启用', Running: '运行中', Disabled: '已暂停', MISSING: '未安装' })[s] || s || '未知';
+      }
+
+      function actionText(a) {
+        return ({ schedule: '定时关机', 'schedule-in': '延时关机', cancel: '取消关机', 'shutdown-now': '立即关机' })[a] || a || '—';
+      }
+
+      function setOnline(ok) {
+        var el = $('conn');
+        el.textContent = ok ? '已连接' : '连接失败';
+        el.className = 'badge ' + (ok ? 'ok' : 'bad');
+      }
+
+      function showLogin(msg) {
+        $('login').hidden = false;
+        $('loginMsg').textContent = msg || '';
+        $('tokenInput').focus();
+      }
+
+      function hideLogin() { $('login').hidden = true; }
+
+      function msg(id, text, isErr) {
+        var el = $(id);
+        el.textContent = text;
+        el.className = 'msg ' + (isErr ? 'err' : 'ok');
+      }
+
+      async function api(path, options) {
+        options = options || {};
+        var headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+        if (token) { headers['Authorization'] = 'Bearer ' + token; }
+        var res;
+        try {
+          res = await fetch(path, Object.assign({}, options, { headers: headers, cache: 'no-store' }));
+        } catch (e) {
+          setOnline(false);
+          throw new Error('无法连接目标电脑');
+        }
+        var data = null;
+        try { data = await res.json(); } catch (e) { }
+        if (res.status === 401) {
+          token = '';
+          localStorage.removeItem(TOKEN_KEY);
+          showLogin('令牌无效，请重新输入');
+          throw new Error('令牌无效');
+        }
+        if (!res.ok || !data || data.ok === false) {
+          throw new Error((data && data.error) || ('HTTP ' + res.status));
+        }
+        setOnline(true);
+        return data;
+      }
+
+      async function refresh() {
+        try {
+          var s = await api('/api/status');
+          $('hostname').textContent = s.hostname || '目标电脑';
+          $('now').textContent = fmt(s.now);
+          var d = s.daily || {};
+          $('daily').textContent = (d.taskName || '任务') + '：' + stateText(d.state) +
+            '（每日 ' + (d.targetTime || '—') + '，提前 ' + (d.leadMinutes != null ? d.leadMinutes : '—') + ' 分钟）';
+          $('nextRun').textContent = d.nextRunTime ? fmt(d.nextRunTime) : '—';
+          if (s.pending) {
+            $('pending').textContent = fmt(s.pending.at) + '（剩 ' + s.pending.secondsRemaining + ' 秒）';
+          } else {
+            $('pending').textContent = '无（网页未排定）';
+          }
+          if (s.lastAction) {
+            $('lastAction').textContent = actionText(s.lastAction.action) + ' @ ' + fmt(s.lastAction.at) +
+              ' ' + (s.lastAction.ok ? '成功' : '失败');
+          } else {
+            $('lastAction').textContent = '—';
+          }
+          if (!$('at').dataset.touched && d.targetTime) { $('at').value = d.targetTime; }
+          hideLogin();
+        } catch (e) {
+          if (token) { setOnline(false); }
+        }
+      }
+
+      $('loginForm').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var v = $('tokenInput').value.trim();
+        if (!v) { return; }
+        token = v;
+        localStorage.setItem(TOKEN_KEY, token);
+        try {
+          await refresh();
+          if (!$('login').hidden) { $('loginMsg').textContent = '仍然无法连接，请检查令牌和网络。'; }
+        } catch (err) {
+          $('loginMsg').textContent = err.message;
+        }
+      });
+
+      $('at').addEventListener('input', function () { $('at').dataset.touched = '1'; });
+
+      $('scheduleForm').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var at = $('at').value;
+        try {
+          var r = await api('/api/schedule', { method: 'POST', body: JSON.stringify({ at: at }) });
+          msg('scheduleMsg', '已排定 ' + at + '，约 ' + Math.round(r.seconds / 60) + ' 分钟后关机', false);
+          refresh();
+        } catch (err) {
+          msg('scheduleMsg', err.message, true);
+        }
+      });
+
+      Array.prototype.forEach.call(document.querySelectorAll('[data-min]'), function (btn) {
+        btn.addEventListener('click', async function () {
+          var n = parseInt(btn.getAttribute('data-min'), 10);
+          try {
+            await api('/api/schedule', { method: 'POST', body: JSON.stringify({ inMinutes: n }) });
+            msg('scheduleMsg', '已排定 ' + n + ' 分钟后关机', false);
+            refresh();
+          } catch (err) {
+            msg('scheduleMsg', err.message, true);
+          }
+        });
+      });
+
+      $('shutdownHard').addEventListener('click', async function () {
+        if (!confirm('目标电脑会立即关机，发出后无法取消。\n\n未保存的内容会丢失。确定吗？')) { return; }
+        try {
+          await api('/api/shutdown-now', { method: 'POST', body: JSON.stringify({ delaySeconds: 0 }) });
+          msg('dangerMsg', '已发送立即关机命令，目标电脑正在关闭', false);
+        } catch (err) {
+          msg('dangerMsg', err.message, true);
+        }
+      });
+
+      $('cancel').addEventListener('click', async function () {
+        try {
+          var r = await api('/api/cancel', { method: 'POST', body: '{}' });
+          if (r.cancelled) { msg('dangerMsg', '已取消关机', false); }
+          else { msg('dangerMsg', '当前没有待取消的关机', true); }
+          refresh();
+        } catch (err) {
+          msg('dangerMsg', err.message, true);
+        }
+      });
+
+      $('changeToken').addEventListener('click', function () {
+        token = '';
+        localStorage.removeItem(TOKEN_KEY);
+        showLogin('请输入新的令牌');
+      });
+
+      if (token) { hideLogin(); refresh(); } else { showLogin(); }
+      setInterval(function () { if (token) { refresh(); } }, 5000);
+    })();
+  </script>
+</body>
+</html>
